@@ -35,6 +35,15 @@ def is_designation(line: str) -> bool:
     ]
     return any(k.lower() in line.lower() for k in keywords)
 
+def likely_company(line):
+    keywords = [
+        "MEDICAL", "MEDICALS", "PHARMACY", "HOSPITAL",
+        "CLINIC", "ENTERPRISES", "INDUSTRIES", "STORE", "TRADERS",
+        "SOLUTIONS", "TECH", "LAB", "LABS", "PRIVATE", "LTD", "PVT", "AGENCIES","DIGITAL"
+    ]
+    return (
+         any(k.lower() in line.lower() for k in keywords)
+    ) and not re.search(r"\d", line)
 
 def merge_entities(entities: List[dict], target_type="ORG"):
     results = []
@@ -68,30 +77,33 @@ def merge_entities(entities: List[dict], target_type="ORG"):
 # -------------------- NER Init --------------------
 ner_pipeline = None
 
+
 def init_ner():
     global ner_pipeline
     if not ner_pipeline:
         print("Loading NER model...")
-        tokenizer = AutoTokenizer.from_pretrained("dslim/bert-base-NER")
-        model = AutoModelForTokenClassification.from_pretrained("dslim/bert-base-NER")
+        model_name = "Jean-Baptiste/roberta-large-ner-english"
+        # model_name="dslim/bert-base-NER"  # ✅ use the same model for tokenizer and model
+        tokenizer = AutoTokenizer.from_pretrained(model_name)
+        model = AutoModelForTokenClassification.from_pretrained(model_name)
         ner_pipeline = pipeline("ner", model=model, tokenizer=tokenizer, aggregation_strategy="simple")
         print("NER model loaded.")
+
 
 
 # -------------------- FastAPI Models --------------------
 class OCRRequest(BaseModel):
     ocrLines: List[str]
 
-
 # -------------------- Main Extraction --------------------
 def extract_entities(ocr_lines: List[str]):
     init_ner()
     extracted = {"persons": [], "companies": [], "locations": [], "designations": []}
-
+    fallback_company=[]
     for line in ocr_lines:
         cleaned_line = clean_name(line)
         ner_result = ner_pipeline(cleaned_line)
-
+        print("ner_result ",ner_result)
         # Person
         if any(e['entity_group'] == "PER" for e in ner_result):
             extracted['persons'].append(line)
@@ -103,8 +115,15 @@ def extract_entities(ocr_lines: List[str]):
             extracted['designations'].append(designation_text)
 
         # Organization (filter out emails/urls/short junk)
-        if any(e['entity_group'] == "ORG" for e in ner_result) and not re.search(r"(E-Mail|www\.|\.com|do|mailto)", line, re.I):
-            extracted['companies'].append(line)
+        # if any(e['entity_group'] == "ORG" for e in ner_result) and not re.search(r"(E-Mail|www\.|\.com|do|mailto)", line, re.I):
+        #     extracted['companies'].append(line)
+        is_org = any(e['entity_group'] == "ORG" for e in ner_result)
+
+        if (is_org  or likely_company(line)) and not re.search(r"(E-Mail|www\.|\.com|do|mailto)", line, re.I):
+            if is_org:
+                extracted['companies'].append(line)
+            else:
+                fallback_company.append(line)
 
         # Location
         if any(e['entity_group'] == "LOC" for e in ner_result) or is_address(line):
@@ -121,8 +140,10 @@ def extract_entities(ocr_lines: List[str]):
     ]
 
     company_entities = []
+    print("org_candidates ",org_candidates,"\nextracted['companies']",extracted['companies'])
     for line in org_candidates:
         ner_line = ner_pipeline(line)
+        print("ner_line comp ",ner_line)
         merged = merge_entities(ner_line, "ORG")
         company_entities.extend(merged)
 
@@ -138,19 +159,19 @@ def extract_entities(ocr_lines: List[str]):
         for desig in extracted['designations']:
             addr = addr.replace(desig, "")
         cleaned_addresses.append(addr.strip())
-
     return {
         "name": clean_name(extracted['persons'][0]) if extracted['persons'] else "",
-        "company": best_company,
+        "company": best_company or (fallback_company[0] if fallback_company else "") or "",
         "address": cleaned_addresses,
         "designation": extracted['designations']
     }
 
 
-
+init_ner()
 # -------------------- API --------------------
 @app.post("/extract")
 async def extract(req: OCRRequest):
+    print("req.ocrLines ",req.ocrLines)
     result = extract_entities(req.ocrLines)
     return result
 
@@ -158,3 +179,4 @@ async def extract(req: OCRRequest):
 # -------------------- Run --------------------
 if __name__ == "__main__":
     uvicorn.run("app:app", host="0.0.0.0", port=3000, reload=True)
+
