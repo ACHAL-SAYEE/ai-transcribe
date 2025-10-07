@@ -1,12 +1,28 @@
-from fastapi import FastAPI, Request
+from fastapi import FastAPI
 from pydantic import BaseModel
-from typing import List, Optional
-from transformers import AutoTokenizer, AutoModelForTokenClassification, pipeline
+from typing import List
+import boto3
 import re
 import uvicorn
+import os
+from dotenv import load_dotenv
 
 app = FastAPI()
+load_dotenv() 
+# -------------------- AWS Comprehend Init --------------------
+# comprehend = boto3.client("comprehend", region_name="us-east-1")
+AWS_ACCESS_KEY = os.getenv("AWS_ACCESS_KEY_ID")
+AWS_SECRET_ACCESS_KEY = os.getenv("AWS_SECRET_ACCESS_KEY")
+AWS_REGION = os.getenv("AWS_REGION", "us-east-1")
+print("AWS_ACCESS_KEY ",AWS_ACCESS_KEY)
+print("AWS_SECRET_ACCESS_KEY ",AWS_SECRET_ACCESS_KEY)
 
+comprehend = boto3.client(
+    'comprehend',
+    aws_access_key_id=AWS_ACCESS_KEY,
+    aws_secret_access_key=AWS_SECRET_ACCESS_KEY,
+    region_name=AWS_REGION
+)
 # -------------------- Helpers --------------------
 def clean_name(line: str) -> str:
     if not line:
@@ -21,75 +37,36 @@ def clean_name(line: str) -> str:
         line = re.sub(rf"\b{word}\b", "", line, flags=re.I)
     return re.sub(r"\s+", " ", line).strip()
 
-
 def is_address(line: str) -> bool:
-    keywords = ["road","phase","sector","street","extn","block","complex","tower","floor","plot"]
+    keywords = ["road", "phase", "sector", "street", "extn", "block", "complex", "tower", "floor", "plot"]
     return any(k.lower() in line.lower() for k in keywords) and bool(re.search(r"\d", line))
-
 
 def is_designation(line: str) -> bool:
     keywords = [
-        "lead","manager","director","chief","head","engineer","developer",
-        "designer","consultant","analyst","specialist","coordinator","executive",
-        "officer","president","vp","founder","chemist"
+        "lead", "manager", "director", "chief", "head", "engineer", "developer",
+        "designer", "consultant", "analyst", "specialist", "coordinator", "executive",
+        "officer", "president", "vp", "founder", "chemist"
     ]
     return any(k.lower() in line.lower() for k in keywords)
 
 def likely_company(line):
     keywords = [
-        "MEDICAL", "MEDICALS", "PHARMACY", "HOSPITAL",
-        "CLINIC", "ENTERPRISES", "INDUSTRIES", "STORE", "TRADERS",
-        "SOLUTIONS", "TECH", "LAB", "LABS", "PRIVATE", "LTD", "PVT", "AGENCIES","DIGITAL"
+        "MEDICAL", "MEDICALS", "PHARMACY", "HOSPITAL", "CLINIC", "ENTERPRISES",
+        "INDUSTRIES", "STORE", "TRADERS", "SOLUTIONS", "TECH", "LAB", "LABS",
+        "PRIVATE", "LTD", "PVT", "AGENCIES", "DIGITAL"
     ]
-    return (
-         any(k.lower() in line.lower() for k in keywords)
-    ) and not re.search(r"\d", line)
+    return any(k.lower() in line.lower() for k in keywords) and not re.search(r"\d", line)
 
-def merge_entities(entities: List[dict], target_type="ORG"):
-    results = []
-    current_tokens = []
-    current_scores = []
-
-    for e in entities:
-        if e['entity_group'] == target_type and not current_tokens:
-            current_tokens = [e['word']]
-            current_scores = [e['score']]
-        elif e['entity_group'] == target_type:
-            if e['word'].startswith("##"):
-                current_tokens[-1] += e['word'][2:]
-            else:
-                current_tokens.append(e['word'])
-            current_scores.append(e['score'])
-        else:
-            if current_tokens:
-                text = " ".join(current_tokens).replace("##", "").strip()
-                score = sum(current_scores) / len(current_scores)
-                results.append({"text": text, "score": score})
-                current_tokens, current_scores = [], []
-
-    if current_tokens:
-        text = " ".join(current_tokens).replace("##", "").strip()
-        score = sum(current_scores) / len(current_scores)
-        results.append({"text": text, "score": score})
-
-    return results
-
-# -------------------- NER Init --------------------
-ner_pipeline = None
-
-
-def init_ner():
-    global ner_pipeline
-    if not ner_pipeline:
-        print("Loading NER model...")
-        model_name = "Jean-Baptiste/roberta-large-ner-english"
-        # model_name="dslim/bert-base-NER"  # ✅ use the same model for tokenizer and model
-        tokenizer = AutoTokenizer.from_pretrained(model_name)
-        model = AutoModelForTokenClassification.from_pretrained(model_name)
-        ner_pipeline = pipeline("ner", model=model, tokenizer=tokenizer, aggregation_strategy="simple")
-        print("NER model loaded.")
-
-
+# -------------------- AWS Comprehend Helper --------------------
+def aws_ner(text: str):
+    if not text.strip():
+        return []
+    try:
+        response = comprehend.detect_entities(Text=text, LanguageCode="en")
+        return response.get("Entities", [])
+    except Exception as e:
+        print("AWS Comprehend error:", e)
+        return []
 
 # -------------------- FastAPI Models --------------------
 class OCRRequest(BaseModel):
@@ -97,86 +74,63 @@ class OCRRequest(BaseModel):
 
 # -------------------- Main Extraction --------------------
 def extract_entities(ocr_lines: List[str]):
-    init_ner()
     extracted = {"persons": [], "companies": [], "locations": [], "designations": []}
-    fallback_company=[]
+    fallback_company = []
+
     for line in ocr_lines:
         cleaned_line = clean_name(line)
-        ner_result = ner_pipeline(cleaned_line)
-        print("ner_result ",ner_result)
+        ner_result = aws_ner(cleaned_line)
+        print("ner_result", ner_result)
+
+        entity_types = [e["Type"] for e in ner_result]
+
         # Person
-        if any(e['entity_group'] == "PER" for e in ner_result):
-            extracted['persons'].append(line)
+        if "PERSON" in entity_types:
+            extracted["persons"].append(line)
 
-        # Designation first (so we can remove it from location later)
+        # Designation
         if is_designation(line):
-            # remove trailing comma/keywords from line
             designation_text = re.sub(r",?\s*(India|US|UK+)$", "", line)
-            extracted['designations'].append(designation_text)
+            extracted["designations"].append(designation_text)
 
-        # Organization (filter out emails/urls/short junk)
-        # if any(e['entity_group'] == "ORG" for e in ner_result) and not re.search(r"(E-Mail|www\.|\.com|do|mailto)", line, re.I):
-        #     extracted['companies'].append(line)
-        is_org = any(e['entity_group'] == "ORG" for e in ner_result)
-
-        if (is_org  or likely_company(line)) and not re.search(r"(E-Mail|www\.|\.com|do|mailto)", line, re.I):
-            if is_org:
-                extracted['companies'].append(line)
+        # Company
+        if "ORGANIZATION" in entity_types or likely_company(line):
+            if "ORGANIZATION" in entity_types:
+                extracted["companies"].append(line)
             else:
                 fallback_company.append(line)
 
         # Location
-        if any(e['entity_group'] == "LOC" for e in ner_result) or is_address(line):
-            # skip if line is already marked as designation
+        if "LOCATION" in entity_types or is_address(line):
             if not is_designation(line):
-                extracted['locations'].append(line)
+                extracted["locations"].append(line)
 
-    # Merge company entities for best scoring
-    # Only merge the first ORG line for clean company name
-# Filter out lines that are actually designations
-    org_candidates = [
-        line for line in extracted['companies'] 
-        if line not in extracted['designations']
-    ]
-
-    company_entities = []
-    print("org_candidates ",org_candidates,"\nextracted['companies']",extracted['companies'])
-    for line in org_candidates:
-        ner_line = ner_pipeline(line)
-        print("ner_line comp ",ner_line)
-        merged = merge_entities(ner_line, "ORG")
-        company_entities.extend(merged)
-
-    # Pick the ORG entity with the most words (prefer longer company names)
+    # Pick best company
     best_company = ""
-    if company_entities:
-        best_company = max(company_entities, key=lambda x: (len(x['text'].split()), x['score']))['text']
+    if extracted["companies"]:
+        best_company = max(extracted["companies"], key=lambda x: len(x))
 
-
-    # Clean up addresses by removing designation words
+    # Clean up addresses
     cleaned_addresses = []
-    for addr in extracted['locations']:
-        for desig in extracted['designations']:
+    for addr in extracted["locations"]:
+        for desig in extracted["designations"]:
             addr = addr.replace(desig, "")
         cleaned_addresses.append(addr.strip())
+
     return {
-        "name": clean_name(extracted['persons'][0]) if extracted['persons'] else "",
-        "company": best_company or (fallback_company[0] if fallback_company else "") or "",
+        "name": clean_name(extracted["persons"][0]) if extracted["persons"] else "",
+        "company": best_company or (fallback_company[0] if fallback_company else ""),
         "address": cleaned_addresses,
-        "designation": extracted['designations']
+        "designation": extracted["designations"],
     }
 
-
-init_ner()
 # -------------------- API --------------------
 @app.post("/extract")
 async def extract(req: OCRRequest):
-    print("req.ocrLines ",req.ocrLines)
+    print("req.ocrLines", req.ocrLines)
     result = extract_entities(req.ocrLines)
     return result
-
 
 # -------------------- Run --------------------
 if __name__ == "__main__":
     uvicorn.run("app:app", host="0.0.0.0", port=3000, reload=True)
-
