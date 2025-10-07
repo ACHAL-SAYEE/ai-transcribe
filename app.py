@@ -13,7 +13,7 @@ load_dotenv()
 # comprehend = boto3.client("comprehend", region_name="us-east-1")
 AWS_ACCESS_KEY = os.getenv("AWS_ACCESS_KEY_ID")
 AWS_SECRET_ACCESS_KEY = os.getenv("AWS_SECRET_ACCESS_KEY")
-AWS_REGION = os.getenv("AWS_REGION", "us-east-1")
+AWS_REGION = os.getenv("AWS_REGION", "ap-south-1")
 print("AWS_ACCESS_KEY ",AWS_ACCESS_KEY)
 print("AWS_SECRET_ACCESS_KEY ",AWS_SECRET_ACCESS_KEY)
 
@@ -82,7 +82,7 @@ def extract_entities(ocr_lines: List[str]):
 
         # ---------------- Convert all caps to title case ----------------
         if cleaned_line.isupper() and len(cleaned_line) > 1:
-            cleaned_line = cleaned_line.title()  # Converts "HERITAGE FOODS LIMITED" -> "Heritage Foods Limited"
+            cleaned_line = cleaned_line.title() 
 
         ner_result = aws_ner(cleaned_line)
         print("ner_result", ner_result)
