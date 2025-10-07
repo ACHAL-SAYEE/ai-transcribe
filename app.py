@@ -45,7 +45,7 @@ def is_designation(line: str) -> bool:
     keywords = [
         "lead", "manager", "director", "chief", "head", "engineer", "developer",
         "designer", "consultant", "analyst", "specialist", "coordinator", "executive",
-        "officer", "president", "vp", "founder", "chemist","ceo"
+        "officer", "president", "vp", "founder", "chemist","marketer"
     ]
     return any(k.lower() in line.lower() for k in keywords)
 
@@ -92,8 +92,8 @@ def extract_entities(ocr_lines: List[str]):
         for e in person_entities:
             # Only add if not a designation
             if not is_designation(e["Text"]):
-                # extracted["persons"].append({"text": e["Text"], "score": e["Score"]})
-                extracted["persons"].append({"text": cleaned_line, "score": e["Score"]})
+                extracted["persons"].append({"text": e["Text"], "score": e["Score"]})
+                # extracted["persons"].append({"text": cleaned_line, "score": e["Score"]})
         # ---------------- Designation ----------------
         if is_designation(line):
             designation_text = re.sub(r",?\s*(India|US|UK+)$", "", line)
