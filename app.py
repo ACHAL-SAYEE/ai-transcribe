@@ -13,7 +13,7 @@ load_dotenv()
 # comprehend = boto3.client("comprehend", region_name="us-east-1")
 AWS_ACCESS_KEY = os.getenv("AWS_ACCESS_KEY_ID")
 AWS_SECRET_ACCESS_KEY = os.getenv("AWS_SECRET_ACCESS_KEY")
-AWS_REGION = os.getenv("AWS_REGION", "us-east-1")
+AWS_REGION = os.getenv("AWS_REGION", "ap-south-1")
 print("AWS_ACCESS_KEY ",AWS_ACCESS_KEY)
 print("AWS_SECRET_ACCESS_KEY ",AWS_SECRET_ACCESS_KEY)
 
