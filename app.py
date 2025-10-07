@@ -13,7 +13,7 @@ load_dotenv()
 # comprehend = boto3.client("comprehend", region_name="us-east-1")
 AWS_ACCESS_KEY = os.getenv("AWS_ACCESS_KEY_ID")
 AWS_SECRET_ACCESS_KEY = os.getenv("AWS_SECRET_ACCESS_KEY")
-AWS_REGION = os.getenv("AWS_REGION", "ap-south-1")
+AWS_REGION = os.getenv("AWS_REGION", "us-east-1")
 print("AWS_ACCESS_KEY ",AWS_ACCESS_KEY)
 print("AWS_SECRET_ACCESS_KEY ",AWS_SECRET_ACCESS_KEY)
 
@@ -53,7 +53,7 @@ def likely_company(line):
     keywords = [
         "MEDICAL", "MEDICALS", "PHARMACY", "HOSPITAL", "CLINIC", "ENTERPRISES",
         "INDUSTRIES", "STORE", "TRADERS", "SOLUTIONS", "TECH", "LAB", "LABS",
-        "PRIVATE", "LTD", "PVT", "AGENCIES", "DIGITAL"
+        "PRIVATE", "LTD", "PVT", "AGENCIES", "DIGITAL","LIMITED"
     ]
     return any(k.lower() in line.lower() for k in keywords) and not re.search(r"\d", line)
 
@@ -79,38 +79,53 @@ def extract_entities(ocr_lines: List[str]):
 
     for line in ocr_lines:
         cleaned_line = clean_name(line)
+
+        # ---------------- Convert all caps to title case ----------------
+        if cleaned_line.isupper() and len(cleaned_line) > 1:
+            cleaned_line = cleaned_line.title()  # Converts "HERITAGE FOODS LIMITED" -> "Heritage Foods Limited"
+
         ner_result = aws_ner(cleaned_line)
         print("ner_result", ner_result)
 
-        entity_types = [e["Type"] for e in ner_result]
+        # ---------------- Person ----------------
+        person_entities = [e for e in ner_result if e["Type"] == "PERSON"]
+        for e in person_entities:
+            # Only add if not a designation
+            if not is_designation(e["Text"]):
+                extracted["persons"].append({"text": e["Text"], "score": e["Score"]})
 
-        # Person
-        if "PERSON" in entity_types:
-            extracted["persons"].append(line)
-
-        # Designation
+        # ---------------- Designation ----------------
         if is_designation(line):
             designation_text = re.sub(r",?\s*(India|US|UK+)$", "", line)
             extracted["designations"].append(designation_text)
 
-        # Company
-        if "ORGANIZATION" in entity_types or likely_company(line):
-            if "ORGANIZATION" in entity_types:
+        # ---------------- Company ----------------
+        if "ORGANIZATION" in [e["Type"] for e in ner_result] or likely_company(line):
+            if any(e["Type"] == "ORGANIZATION" for e in ner_result):
                 extracted["companies"].append(line)
             else:
                 fallback_company.append(line)
 
-        # Location
-        if "LOCATION" in entity_types or is_address(line):
+        # ---------------- Location ----------------
+        if "LOCATION" in [e["Type"] for e in ner_result] or is_address(line):
             if not is_designation(line):
                 extracted["locations"].append(line)
 
-    # Pick best company
+    # ---------------- Pick Best Person ----------------
+    best_person = ""
+    if extracted["persons"]:
+        best_person_entity = max(
+            extracted["persons"],
+            key=lambda x: (len(x["text"]), x["score"])
+        )
+        best_person = best_person_entity["text"]
+
+    # ---------------- Pick Best Company ----------------
     best_company = ""
     if extracted["companies"]:
         best_company = max(extracted["companies"], key=lambda x: len(x))
 
-    # Clean up addresses
+    # ---------------- Clean Addresses ----------------
     cleaned_addresses = []
     for addr in extracted["locations"]:
         for desig in extracted["designations"]:
@@ -118,7 +133,7 @@ def extract_entities(ocr_lines: List[str]):
         cleaned_addresses.append(addr.strip())
 
     return {
-        "name": clean_name(extracted["persons"][0]) if extracted["persons"] else "",
+        "name": best_person,
         "company": best_company or (fallback_company[0] if fallback_company else ""),
         "address": cleaned_addresses,
         "designation": extracted["designations"],
