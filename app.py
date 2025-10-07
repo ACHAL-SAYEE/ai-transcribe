@@ -31,7 +31,7 @@ def is_designation(line: str) -> bool:
     keywords = [
         "lead","manager","director","chief","head","engineer","developer",
         "designer","consultant","analyst","specialist","coordinator","executive",
-        "officer","president","vp","founder"
+        "officer","president","vp","founder","chemist"
     ]
     return any(k.lower() in line.lower() for k in keywords)
 
