@@ -7,17 +7,22 @@ import uvicorn
 from PIL import Image
 from io import BytesIO
 from datetime import datetime
-import os
-from dotenv import load_dotenv
+# from dotenv import load_dotenv
+import json
 
-load_dotenv() 
+with open("config.json", "r") as f:
+    config = json.load(f)
+
+# load_dotenv() 
 
 app = FastAPI()
 
 # Initialize Azure Document Intelligence client
-endpoint = "https://ai-transcribe.cognitiveservices.azure.com"
-api_key = os.getenv("api_key")
-print("api_key ",api_key)
+endpoint = config['endpoint']
+# api_key = os.getenv("api_key")
+api_key=config['azure_key']
+
+
 client = DocumentAnalysisClient(endpoint, AzureKeyCredential(api_key))
 
 
