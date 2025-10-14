@@ -1,151 +1,175 @@
 from fastapi import FastAPI
+from azure.ai.formrecognizer import DocumentAnalysisClient
+from azure.core.credentials import AzureKeyCredential
 from pydantic import BaseModel
-from typing import List
-import boto3
-import re
+import base64
 import uvicorn
+from PIL import Image
+from io import BytesIO
+from datetime import datetime
 import os
 from dotenv import load_dotenv
 
-app = FastAPI()
 load_dotenv() 
-# -------------------- AWS Comprehend Init --------------------
-# comprehend = boto3.client("comprehend", region_name="us-east-1")
-AWS_ACCESS_KEY = os.getenv("AWS_ACCESS_KEY_ID")
-AWS_SECRET_ACCESS_KEY = os.getenv("AWS_SECRET_ACCESS_KEY")
-AWS_REGION = os.getenv("AWS_REGION", "us-east-1")
-print("AWS_ACCESS_KEY ",AWS_ACCESS_KEY)
-print("AWS_SECRET_ACCESS_KEY ",AWS_SECRET_ACCESS_KEY)
 
-comprehend = boto3.client(
-    'comprehend',
-    aws_access_key_id=AWS_ACCESS_KEY,
-    aws_secret_access_key=AWS_SECRET_ACCESS_KEY,
-    region_name=AWS_REGION
-)
-# -------------------- Helpers --------------------
-def clean_name(line: str) -> str:
-    if not line:
-        return ""
-    line = re.sub(r"\S+@\S+\.\S+", "", line)
-    line = re.sub(r"https?://\S+", "", line)
-    line = re.sub(r"www\.\S+", "", line)
-    line = re.sub(r"(\+?\d[\d\-\)\( ]{5,}\d)", "", line)
-    line = re.sub(r"\d+", "", line)
-    noise_words = ["contact", "ph", "tel", "phone", "mobile"]
-    for word in noise_words:
-        line = re.sub(rf"\b{word}\b", "", line, flags=re.I)
-    return re.sub(r"\s+", " ", line).strip()
+app = FastAPI()
 
-def is_address(line: str) -> bool:
-    keywords = ["road", "phase", "sector", "street", "extn", "block", "complex", "tower", "floor", "plot"]
-    return any(k.lower() in line.lower() for k in keywords) and bool(re.search(r"\d", line))
+# Initialize Azure Document Intelligence client
+endpoint = "https://ai-transcribe.cognitiveservices.azure.com"
+api_key = os.getenv("api_key")
+print("api_key ",api_key)
+client = DocumentAnalysisClient(endpoint, AzureKeyCredential(api_key))
 
-def is_designation(line: str) -> bool:
-    keywords = [
-        "lead", "manager", "director", "chief", "head", "engineer", "developer",
-        "designer", "consultant", "analyst", "specialist", "coordinator", "executive",
-        "officer", "president", "vp", "founder", "chemist","marketer"
-    ]
-    return any(k.lower() in line.lower() for k in keywords)
 
-def likely_company(line):
-    keywords = [
-        "MEDICAL", "MEDICALS", "PHARMACY", "HOSPITAL", "CLINIC", "ENTERPRISES",
-        "INDUSTRIES", "STORE", "TRADERS", "SOLUTIONS", "TECH", "LAB", "LABS",
-        "PRIVATE", "LTD", "PVT", "AGENCIES", "DIGITAL","LIMITED"
-    ]
-    return any(k.lower() in line.lower() for k in keywords) and not re.search(r"\d", line)
 
-# -------------------- AWS Comprehend Helper --------------------
-def aws_ner(text: str):
-    if not text.strip():
-        return []
-    try:
-        response = comprehend.detect_entities(Text=text, LanguageCode="en")
-        return response.get("Entities", [])
-    except Exception as e:
-        print("AWS Comprehend error:", e)
-        return []
+class Base64ArrayInput(BaseModel):
+    images: list[str]  # List of Base64 strings
 
-# -------------------- FastAPI Models --------------------
-class OCRRequest(BaseModel):
-    ocrLines: List[str]
 
-# -------------------- Main Extraction --------------------
-def extract_entities(ocr_lines: List[str]):
-    extracted = {"persons": [], "companies": [], "locations": [], "designations": []}
-    fallback_company = []
+def merge_base64_images_vertically(base64_images: list[str]) -> str:
+    """Merge multiple Base64 images vertically and return a single Base64 string."""
+    images = []
+    for b64 in base64_images:
+        img_data = base64.b64decode(b64.split(",")[-1])
+        img = Image.open(BytesIO(img_data)).convert("RGB")
+        images.append(img)
 
-    for line in ocr_lines:
-        cleaned_line = clean_name(line)
+    # Compute width and total height
+    width = max(img.width for img in images)
+    total_height = sum(img.height for img in images)
 
-        # ---------------- Convert all caps to title case ----------------
-        if cleaned_line.isupper() and len(cleaned_line) > 1:
-            cleaned_line = cleaned_line.title()  # Converts "HERITAGE FOODS LIMITED" -> "Heritage Foods Limited"
+    # Create a blank canvas
+    merged_img = Image.new("RGB", (width, total_height), (255, 255, 255))
 
-        ner_result = aws_ner(cleaned_line)
-        print("ner_result", ner_result)
+    # Paste images one by one
+    y_offset = 0
+    for img in images:
+        merged_img.paste(img, (0, y_offset))
+        y_offset += img.height
 
-        # ---------------- Person ----------------
-        person_entities = [e for e in ner_result if e["Type"] == "PERSON"]
-        for e in person_entities:
-            # Only add if not a designation
-            if not is_designation(e["Text"]):
-                extracted["persons"].append({"text": e["Text"], "score": e["Score"]})
-                # extracted["persons"].append({"text": cleaned_line, "score": e["Score"]})
-        # ---------------- Designation ----------------
-        if is_designation(line):
-            designation_text = re.sub(r",?\s*(India|US|UK+)$", "", line)
-            extracted["designations"].append(designation_text)
+    # Convert merged image back to Base64
+    buffered = BytesIO()
+    merged_img.save(buffered, format="PNG")
+    merged_b64 = base64.b64encode(buffered.getvalue()).decode("utf-8")
+    return f"data:image/png;base64,{merged_b64}"
 
-        # ---------------- Company ----------------
-        if "ORGANIZATION" in [e["Type"] for e in ner_result] or likely_company(line):
-            if any(e["Type"] == "ORGANIZATION" for e in ner_result):
-                extracted["companies"].append(line)
-            else:
-                fallback_company.append(line)
 
-        # ---------------- Location ----------------
-        if "LOCATION" in [e["Type"] for e in ner_result] or is_address(line):
-            if not is_designation(line):
-                extracted["locations"].append(line)
+@app.post("/extract")
+async def analyze_business_cards(data: Base64ArrayInput):
+    print("hit")
+    if not data.images:
+        return {"error": "No images provided"}
 
-    # ---------------- Pick Best Person ----------------
-    best_person = ""
-    if extracted["persons"]:
-        best_person_entity = max(
-            extracted["persons"],
-            key=lambda x: (len(x["text"]), x["score"])
-        )
-        best_person = best_person_entity["text"]
-
-    # ---------------- Pick Best Company ----------------
-    best_company = ""
-    if extracted["companies"]:
-        best_company = max(extracted["companies"], key=lambda x: len(x))
-
-    # ---------------- Clean Addresses ----------------
-    cleaned_addresses = []
-    for addr in extracted["locations"]:
-        for desig in extracted["designations"]:
-            addr = addr.replace(desig, "")
-        cleaned_addresses.append(addr.strip())
-
-    return {
-        "name": best_person,
-        "company": best_company or (fallback_company[0] if fallback_company else ""),
-        "address": cleaned_addresses,
-        "designation": extracted["designations"],
+    merged_summary = {
+        "name": "",
+        "company": "",
+        "designation": "",
+        "address": [],
+        "department": "",
+        "website": "",
+        "email": "",
+        "phone": ""
     }
 
-# -------------------- API --------------------
-@app.post("/extract")
-async def extract(req: OCRRequest):
-    print("req.ocrLines", req.ocrLines)
-    result = extract_entities(req.ocrLines)
-    return result
+    outputs = []
 
-# -------------------- Run --------------------
+    for idx, base64_image in enumerate(data.images):
+        print(f"Processing image {idx+1} at {datetime.now().time()}")
+
+        # Decode Base64
+        document_bytes = base64.b64decode(base64_image.split(",")[-1])
+
+        # Call Azure Document Intelligence
+        poller = client.begin_analyze_document("prebuilt-businessCard", document=document_bytes)
+        result = poller.result()
+
+        if not result.documents:
+            continue
+
+        doc = result.documents[0]
+        output = {}
+        outputs.append(doc.fields.items())
+
+        for field_name, field in doc.fields.items():
+            if field.value_type == "list":
+                output[field_name] = []
+                for item in field.value:
+                    if item.value_type == "dictionary":
+                        output[field_name].append({
+                            k: {"value": v.value, "confidence": v.confidence}
+                            for k, v in item.value.items()
+                        })
+                    elif item.value_type == "address":
+                        output[field_name].append({
+                            "structured": item.value.__dict__,
+                            "content": item.content,
+                            "confidence": item.confidence
+                        })
+                    else:
+                        output[field_name].append({
+                            "value": item.value,
+                            "confidence": item.confidence
+                        })
+            elif field.value_type == "dictionary":
+                output[field_name] = {
+                    k: {"value": v.value, "confidence": v.confidence}
+                    for k, v in field.value.items()
+                }
+            else:
+                output[field_name] = {
+                    "value": field.value,
+                    "confidence": field.confidence
+                }
+
+        # Merge into summary
+        if "ContactNames" in output and output["ContactNames"]:
+            name_parts = output["ContactNames"][0]
+            first = name_parts.get("FirstName", {}).get("value", "")
+            last = name_parts.get("LastName", {}).get("value", "")
+            full_name = f"{first} {last}".strip()
+            if full_name and not merged_summary["name"]:
+                merged_summary["name"] = full_name
+
+        if "CompanyNames" in output and output["CompanyNames"]:
+            company = output["CompanyNames"][0].get("value", "")
+            if company and not merged_summary["company"]:
+                merged_summary["company"] = company
+
+        if "JobTitles" in output and output["JobTitles"]:
+            designation = output["JobTitles"][0].get("value", "")
+            if designation and not merged_summary["designation"]:
+                merged_summary["designation"] = designation
+
+        if "Departments" in output and output["Departments"]:
+            department = output["Departments"][0].get("value", "")
+            if department and not merged_summary["department"]:
+                merged_summary["department"] = department
+
+        if "Websites" in output and output["Websites"]:
+            website = output["Websites"][0].get("value", "")
+            if website and not merged_summary["website"]:
+                merged_summary["website"] = website
+
+        if "Emails" in output and output["Emails"]:
+            email = output["Emails"][0].get("value", "")
+            if email and not merged_summary["email"]:
+                merged_summary["email"] = email
+
+        if "WorkPhones" in output and output["WorkPhones"]:
+            phone = output["WorkPhones"][0].get("value", "")
+            if phone and not merged_summary["phone"]:
+                merged_summary["phone"] = phone
+
+        if "Addresses" in output:
+            for addr in output["Addresses"]:
+                content = addr.get("content")
+                if content and content not in merged_summary["address"]:
+                    merged_summary["address"].append(content)
+
+        print(f"Finished image {idx+1} at {datetime.now().time()}")
+
+    return {**merged_summary, "outputs": outputs}
+
+
 if __name__ == "__main__":
     uvicorn.run("app:app", host="0.0.0.0", port=3000, reload=True)

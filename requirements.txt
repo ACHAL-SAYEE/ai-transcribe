@@ -1,4 +1,7 @@
 fastapi
-uvicorn[standard]
+uvicorn
+azure-ai-formrecognizer
+azure-core
 pydantic
-boto3
+Pillow
+python-dotenv
