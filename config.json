@@ -1,4 +1,4 @@
 {
-  "azure_key": "",
-  "endpoint": "https://ai-transcribe.cognitiveservices.azure.com"
+  "api_key": "your-secret-api-key",
+  "endpoint": "https://example.com"
 }

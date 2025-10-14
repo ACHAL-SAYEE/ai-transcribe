@@ -4,3 +4,4 @@ azure-ai-formrecognizer
 azure-core
 pydantic
 python-dotenv
+azure
