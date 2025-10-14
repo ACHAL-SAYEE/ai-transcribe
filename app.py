@@ -4,8 +4,6 @@ from azure.core.credentials import AzureKeyCredential
 from pydantic import BaseModel
 import base64
 import uvicorn
-from PIL import Image
-from io import BytesIO
 from datetime import datetime
 # from dotenv import load_dotenv
 import json
@@ -29,34 +27,6 @@ client = DocumentAnalysisClient(endpoint, AzureKeyCredential(api_key))
 
 class Base64ArrayInput(BaseModel):
     images: list[str]  # List of Base64 strings
-
-
-def merge_base64_images_vertically(base64_images: list[str]) -> str:
-    """Merge multiple Base64 images vertically and return a single Base64 string."""
-    images = []
-    for b64 in base64_images:
-        img_data = base64.b64decode(b64.split(",")[-1])
-        img = Image.open(BytesIO(img_data)).convert("RGB")
-        images.append(img)
-
-    # Compute width and total height
-    width = max(img.width for img in images)
-    total_height = sum(img.height for img in images)
-
-    # Create a blank canvas
-    merged_img = Image.new("RGB", (width, total_height), (255, 255, 255))
-
-    # Paste images one by one
-    y_offset = 0
-    for img in images:
-        merged_img.paste(img, (0, y_offset))
-        y_offset += img.height
-
-    # Convert merged image back to Base64
-    buffered = BytesIO()
-    merged_img.save(buffered, format="PNG")
-    merged_b64 = base64.b64encode(buffered.getvalue()).decode("utf-8")
-    return f"data:image/png;base64,{merged_b64}"
 
 
 @app.post("/extract")

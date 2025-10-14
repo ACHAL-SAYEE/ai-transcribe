@@ -3,5 +3,4 @@ uvicorn
 azure-ai-formrecognizer
 azure-core
 pydantic
-Pillow
 python-dotenv
