@@ -32,6 +32,9 @@ class Base64ArrayInput(BaseModel):
 @app.post("/extract")
 async def analyze_business_cards(data: Base64ArrayInput):
     print("hit")
+    # return {
+    #     "1":1
+    # }
     if not data.images:
         return {"error": "No images provided"}
 
@@ -43,7 +46,9 @@ async def analyze_business_cards(data: Base64ArrayInput):
         "department": "",
         "website": "",
         "email": "",
-        "phone": ""
+        "WorkPhone": "",
+        "MobilePhone":"",
+        "OtherPhone":""
     }
 
     outputs = []
@@ -106,9 +111,12 @@ async def analyze_business_cards(data: Base64ArrayInput):
                 merged_summary["name"] = full_name
 
         if "CompanyNames" in output and output["CompanyNames"]:
-            company = output["CompanyNames"][0].get("value", "")
+            # Pick company with highest confidence
+            best_company = max(output["CompanyNames"], key=lambda c: c.get("confidence", 0))
+            company = best_company.get("value", "")
             if company and not merged_summary["company"]:
                 merged_summary["company"] = company
+
 
         if "JobTitles" in output and output["JobTitles"]:
             designation = output["JobTitles"][0].get("value", "")
@@ -132,8 +140,18 @@ async def analyze_business_cards(data: Base64ArrayInput):
 
         if "WorkPhones" in output and output["WorkPhones"]:
             phone = output["WorkPhones"][0].get("value", "")
-            if phone and not merged_summary["phone"]:
-                merged_summary["phone"] = phone
+            if phone and not merged_summary["WorkPhone"]:
+                merged_summary["WorkPhone"] = phone
+
+        if "MobilePhones" in output and output["MobilePhones"]:
+            phone = output["MobilePhones"][0].get("value", "")
+            if phone and not merged_summary["MobilePhone"]:
+                merged_summary["MobilePhone"] = phone   
+
+        if "OtherPhones" in output and output["OtherPhones"]:
+            phone = output["OtherPhones"][0].get("value", "")
+            if phone and not merged_summary["OtherPhone"]:
+                merged_summary["OtherPhone"] = phone                              
 
         if "Addresses" in output:
             for addr in output["Addresses"]:
