@@ -3,4 +3,5 @@ uvicorn
 azure-ai-formrecognizer
 azure-core
 pydantic
-python-dotenv
+transformers
+torch
