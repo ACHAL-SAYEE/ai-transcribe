@@ -115,6 +115,9 @@ def init_ner():
 class OCRRequest(BaseModel):
     ocrLines: List[str]
 
+class Base64ArrayInput(BaseModel):
+    images: list[str]  # List of Base64 strings
+    
 # -------------------- Main Extraction --------------------
 def extract_entities(ocr_lines: List[str]):
     init_ner()
@@ -196,8 +199,7 @@ async def extract(req: OCRRequest):
     return result
 
 
-class Base64ArrayInput(BaseModel):
-    images: list[str]  # List of Base64 strings
+
 @app.post("/ai-extract")
 async def analyze_business_cards(data: Base64ArrayInput):
     print("hit")
