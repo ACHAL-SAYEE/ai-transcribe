@@ -336,5 +336,4 @@ async def analyze_business_cards(data: Base64ArrayInput):
 
 
 if __name__ == "__main__":
-    print("fuck")
     uvicorn.run("app:app", host="0.0.0.0", port=3000, reload=True)
