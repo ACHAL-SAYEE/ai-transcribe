@@ -121,72 +121,89 @@ class Base64ArrayInput(BaseModel):
 # -------------------- Main Extraction --------------------
 def extract_entities(ocr_lines: List[str]):
     init_ner()
-    extracted = {"persons": [], "companies": [], "locations": [], "designations": []}
-    fallback_company=[]
+    extracted = {
+        "persons": [],
+        "companies": [],
+        "locations": [],
+        "designations": []
+    }
+    fallback_company = []
+
+    # --- Pass 1: collect all recognized entities ---
     for line in ocr_lines:
         cleaned_line = clean_name(line)
         ner_result = ner_pipeline(cleaned_line)
-        print("ner_result ",ner_result)
-        # Person
-        if any(e['entity_group'] == "PER" for e in ner_result):
-            extracted['persons'].append(line)
+        print("ner_result ", ner_result)
 
-        # Designation first (so we can remove it from location later)
+        # Collect all detected person & company entities (for later scoring)
+        for e in ner_result:
+            if e['entity_group'] == "PER":
+                extracted["persons"].append(e)
+            elif e['entity_group'] == "ORG":
+                extracted["companies"].append(e)
+
+        # Designation
         if is_designation(line):
-            # remove trailing comma/keywords from line
             designation_text = re.sub(r",?\s*(India|US|UK+)$", "", line)
-            extracted['designations'].append(designation_text)
+            extracted["designations"].append(designation_text)
 
-        # Organization (filter out emails/urls/short junk)
-        # if any(e['entity_group'] == "ORG" for e in ner_result) and not re.search(r"(E-Mail|www\.|\.com|do|mailto)", line, re.I):
-        #     extracted['companies'].append(line)
-        is_org = any(e['entity_group'] == "ORG" for e in ner_result)
-
-        if (is_org  or likely_company(line)) and not re.search(r"(E-Mail|www\.|\.com|do|mailto)", line, re.I):
-            if is_org:
-                extracted['companies'].append(line)
-            else:
+        # Company fallback logic (non-NER heuristic)
+        is_org = any(e["entity_group"] == "ORG" for e in ner_result)
+        if (is_org or likely_company(line)) and not re.search(r"(E-Mail|www\.|\.com|do|mailto)", line, re.I):
+            if not is_org:
                 fallback_company.append(line)
 
-        # Location
-        if any(e['entity_group'] == "LOC" for e in ner_result) or is_address(line):
-            # skip if line is already marked as designation
+        # Location — append complete line
+        if any(e["entity_group"] == "LOC" for e in ner_result) or is_address(line):
             if not is_designation(line):
-                extracted['locations'].append(line)
+                extracted["locations"].append(line)
 
-    # Merge company entities for best scoring
-    # Only merge the first ORG line for clean company name
-# Filter out lines that are actually designations
+    # --- Select best entities (highest score) ---
+    def pick_best(entities, key="score"):
+        if not entities:
+            return ""
+        best = max(entities, key=lambda e: float(e[key]))
+        return best["word"].strip()
+
+    best_person = pick_best(extracted["persons"])
+    best_company_entity = pick_best(extracted["companies"])
+
+    # --- Merge company entities from org_candidates ---
     org_candidates = [
-        line for line in extracted['companies'] 
-        if line not in extracted['designations']
+        line for line in extracted["companies"]
+        if line not in extracted["designations"]
     ]
 
     company_entities = []
-    print("org_candidates ",org_candidates,"\nextracted['companies']",extracted['companies'])
+    print("org_candidates ", org_candidates, "\nextracted['companies']", extracted["companies"])
     for line in org_candidates:
-        ner_line = ner_pipeline(line)
-        print("ner_line comp ",ner_line)
+        ner_line = ner_pipeline(line["word"] if isinstance(line, dict) else line)
+        print("ner_line comp ", ner_line)
         merged = merge_entities(ner_line, "ORG")
         company_entities.extend(merged)
 
-    # Pick the ORG entity with the most words (prefer longer company names)
-    best_company = ""
+    # Prefer NER company entity with highest score and most words
+    best_company = best_company_entity
     if company_entities:
-        best_company = max(company_entities, key=lambda x: (len(x['text'].split()), x['score']))['text']
+        scored_best = max(company_entities, key=lambda x: (len(x["text"].split()), x["score"]))
+        best_company = scored_best["text"]
 
+    # Fallback if no recognized company found
+    if not best_company:
+        best_company = fallback_company[0] if fallback_company else ""
 
-    # Clean up addresses by removing designation words
+    # --- Clean up addresses ---
     cleaned_addresses = []
-    for addr in extracted['locations']:
-        for desig in extracted['designations']:
+    for addr in extracted["locations"]:
+        for desig in extracted["designations"]:
             addr = addr.replace(desig, "")
         cleaned_addresses.append(addr.strip())
+
     return {
-        "name": clean_name(extracted['persons'][0]) if extracted['persons'] else "",
-        "company": best_company or (fallback_company[0] if fallback_company else "") or "",
+        "name": clean_name(best_person),
+        "company": clean_name(best_company),
         "address": cleaned_addresses,
-        "designation": extracted['designations'][0]
+        "designation": extracted["designations"][0] if extracted["designations"] else ""
     }
 
 
