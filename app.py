@@ -10,6 +10,9 @@ import json
 from typing import List, Optional
 from transformers import AutoTokenizer, AutoModelForTokenClassification, pipeline
 import re
+import time
+import logging
+from fastapi.responses import JSONResponse
 
 with open("config.json", "r") as f:
     config = json.load(f)
@@ -17,6 +20,43 @@ with open("config.json", "r") as f:
 # load_dotenv() 
 
 app = FastAPI() 
+
+
+# Configure logging format (prints to console)
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s | %(levelname)s | %(message)s",
+    datefmt="%Y-%m-%d %H:%M:%S"
+)
+
+@app.middleware("http")
+async def log_requests(request: Request, call_next):
+    start_time = time.time()
+
+    client_host = request.client.host if request.client else "unknown"
+    method = request.method
+    path = request.url.path
+
+    logging.info(f"➡️  Request started | {method} {path} | from {client_host}")
+
+    try:
+        response = await call_next(request)
+        status_code = response.status_code
+    except Exception as e:
+        status_code = 500
+        logging.exception(f"❌ Error processing {method} {path}: {e}")
+        return JSONResponse(
+            status_code=500,
+            content={"error": str(e)},
+        )
+
+    process_time = (time.time() - start_time) * 1000
+    logging.info(
+        f"✅ Response sent | {method} {path} | status {status_code} | "
+        f"{process_time:.2f} ms | from {client_host}"
+    )
+
+    return response
 
 # Initialize Azure Document Intelligence client
 endpoint = config['endpoint']
@@ -96,20 +136,24 @@ def merge_entities(entities: List[dict], target_type="ORG"):
 
 # -------------------- NER Init --------------------
 ner_pipeline = None
-
-
-def init_ner():
+@app.on_event("startup")
+def load_ner_model():
+    """Load and warm-up Hugging Face NER model once at startup."""
     global ner_pipeline
-    if not ner_pipeline:
-        print("Loading NER model...")
-        model_name = "Jean-Baptiste/roberta-large-ner-english"
-        # model_name="dslim/bert-base-NER"  # ✅ use the same model for tokenizer and model
-        tokenizer = AutoTokenizer.from_pretrained(model_name)
-        model = AutoModelForTokenClassification.from_pretrained(model_name)
-        ner_pipeline = pipeline("ner", model=model, tokenizer=tokenizer, aggregation_strategy="simple")
-        print("NER model loaded.")
+    logging.info("🚀 Loading NER model at startup...")
 
+    # For faster inference, you can use dslim/bert-base-NER instead of roberta-large
+    # model_name = "dslim/bert-base-NER"
+    model_name = "Jean-Baptiste/roberta-large-ner-english"
 
+    tokenizer = AutoTokenizer.from_pretrained(model_name)
+    model = AutoModelForTokenClassification.from_pretrained(model_name)
+
+    ner_pipeline = pipeline("ner", model=model, tokenizer=tokenizer, aggregation_strategy="simple")
+
+    # Warm-up model to avoid first-call delay
+    ner_pipeline("warm up test")
+    logging.info("✅ NER model ready and warmed up.")
 
 # -------------------- FastAPI Models --------------------
 class OCRRequest(BaseModel):
@@ -120,7 +164,6 @@ class Base64ArrayInput(BaseModel):
     
 # -------------------- Main Extraction --------------------
 def extract_entities(ocr_lines: List[str]):
-    init_ner()
     extracted = {
         "persons": [],
         "companies": [],
@@ -207,7 +250,6 @@ def extract_entities(ocr_lines: List[str]):
     }
 
 
-init_ner()
 # -------------------- API --------------------
 @app.post("/extract")
 async def extract(req: OCRRequest):
